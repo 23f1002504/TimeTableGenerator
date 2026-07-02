@@ -22,6 +22,7 @@ async function requireAuth(req, res, next) {
     req.user = user;
     next();
   } catch (err) {
+    console.error("requireAuth failed:", err.message);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
 }

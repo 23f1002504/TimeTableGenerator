@@ -1,5 +1,5 @@
 import React, { useState } from "react";
-import { Navigate } from "react-router-dom";
+import { Navigate, Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext.jsx";
 
 export default function Login() {
@@ -67,7 +67,7 @@ export default function Login() {
           </button>
 
           <p className="muted" style={{ fontSize: 12.5, marginTop: 14, textAlign: "center" }}>
-            New school? <a href="/register">Register</a>
+            New school? <Link to="/register">Register</Link>
           </p>
         </form>
       </div>
