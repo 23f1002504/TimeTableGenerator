@@ -1,0 +1,255 @@
+// ==========================================================
+// Universal School Timetable Generator — Database Schema
+// Default datasource is SQLite for zero-config local setup.
+// For production, switch provider to "postgresql" and set
+// DATABASE_URL to a real Postgres connection string — the
+// rest of the schema works unchanged.
+// ==========================================================
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite" // change to "postgresql" for production
+  url      = env("DATABASE_URL")
+}
+
+// NOTE: SQLite has no native enum type, so Role/Day are plain strings
+// rather than Prisma enums (Prisma enums require Postgres/MySQL/etc).
+// Valid values are enforced in the application layer:
+//   Role: "SUPER_ADMIN" | "SCHOOL_ADMIN"
+//   Day:  "MON" | "TUE" | "WED" | "THU" | "FRI" | "SAT"
+// If you switch the datasource to postgresql, you can turn these back
+// into real `enum Role { ... }` / `enum Day { ... }` blocks for extra
+// DB-level safety — the rest of the schema and app code needs no changes.
+
+model School {
+  id        String   @id @default(cuid())
+  name      String
+  address   String?
+  email     String?
+  phone     String?
+  active    Boolean  @default(true)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  // Billing — set once the school's application is approved and their
+  // Stripe subscription is created. Used to auto-disable the school if
+  // payment fails or the subscription is cancelled (see stripeWebhookController).
+  stripeCustomerId     String?
+  stripeSubscriptionId String? @unique
+  subscriptionStatus   String? // mirrors Stripe's subscription.status
+
+  users             User[]
+  teachers          Teacher[]
+  subjects          Subject[]
+  classes           AcademicClass[]
+  periods           Period[]
+  timetableEntries  TimetableEntry[]
+  timetableVersions TimetableVersion[]
+}
+
+// A school's signup request, submitted via the public "Request Access"
+// page. Nothing in School/User is created until payment is confirmed
+// AND a SUPER_ADMIN explicitly approves it.
+model SchoolApplication {
+  id           String  @id @default(cuid())
+  schoolName   String
+  address      String?
+  contactName  String
+  contactEmail String
+  contactPhone String?
+
+  // "PENDING_PAYMENT" -> "PAID" -> "APPROVED" | "REJECTED"
+  status String @default("PENDING_PAYMENT")
+
+  stripeCheckoutSessionId String? @unique
+  stripeCustomerId        String?
+  stripeSubscriptionId    String?
+
+  rejectionReason String?
+  approvedSchoolId String? // set once approved, links to the created School
+
+  createdAt  DateTime  @default(now())
+  reviewedAt DateTime?
+}
+
+model User {
+  id           String   @id @default(cuid())
+  email        String   @unique
+  passwordHash String
+  name         String
+  role         String   // "SUPER_ADMIN" | "SCHOOL_ADMIN"
+  createdAt    DateTime @default(now())
+
+  schoolId String?
+  school   School? @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@index([schoolId])
+}
+
+model AcademicClass {
+  id     String @id @default(cuid())
+  name   String // e.g. "Grade 5", "Class X"
+  order  Int    @default(0) // for custom sort order
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  divisions Division[]
+
+  @@index([schoolId])
+}
+
+model Division {
+  id           String @id @default(cuid())
+  name         String // e.g. "A", "B", "Section 1"
+  studentCount Int?
+
+  classId String
+  class   AcademicClass @relation(fields: [classId], references: [id], onDelete: Cascade)
+
+  requirements     Requirement[]
+  timetableEntries TimetableEntry[]
+
+  @@index([classId])
+}
+
+model Subject {
+  id         String  @id @default(cuid())
+  name       String
+  code       String?
+  color      String  @default("#4F46E5") // for UI display
+  isDoublePeriod Boolean @default(false) // e.g. labs that need 2 consecutive periods
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  teacherSubjects  TeacherSubject[]
+  requirements     Requirement[]
+  timetableEntries TimetableEntry[]
+
+  @@index([schoolId])
+}
+
+model Teacher {
+  id                String  @id @default(cuid())
+  name              String
+  email             String?
+  maxPeriodsPerDay  Int     @default(6)
+  maxPeriodsPerWeek Int     @default(30)
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  teacherSubjects  TeacherSubject[]
+  unavailabilities TeacherUnavailability[]
+  requirements     Requirement[]
+  timetableEntries TimetableEntry[]
+
+  @@index([schoolId])
+}
+
+// Which subjects a teacher is qualified/allowed to teach
+model TeacherSubject {
+  id        String  @id @default(cuid())
+  teacherId String
+  subjectId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, subjectId])
+}
+
+// Slots a teacher is NOT available (e.g. part-time teacher, other commitments)
+model TeacherUnavailability {
+  id           String @id @default(cuid())
+  teacherId    String
+  day          String   // "MON".."SAT"
+  periodNumber Int
+  teacher      Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([teacherId, day, periodNumber])
+}
+
+// The bell schedule: fully custom per school, 6 days a week, custom start/end times
+model Period {
+  id           String  @id @default(cuid())
+  day          String   // "MON".."SAT"
+  periodNumber Int
+  startTime    String // "09:00"
+  endTime      String // "09:45"
+  isBreak      Boolean @default(false)
+  label        String? // e.g. "Lunch Break", "Assembly"
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  @@unique([schoolId, day, periodNumber])
+  @@index([schoolId])
+}
+
+// The "curriculum requirement": Division X needs Subject Y taught by Teacher Z,
+// N periods per week. This is the input the generator consumes.
+model Requirement {
+  id           String @id @default(cuid())
+  hoursPerWeek Int
+
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  @@unique([divisionId, subjectId])
+  @@index([divisionId])
+  @@index([teacherId])
+}
+
+// A generation run. Keeping versions lets a school regenerate / compare / publish.
+model TimetableVersion {
+  id        String   @id @default(cuid())
+  label     String   @default("Draft")
+  published Boolean  @default(false)
+  createdAt DateTime @default(now())
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  entries TimetableEntry[]
+
+  @@index([schoolId])
+}
+
+// One placed lesson: Division D has Subject S with Teacher T on Day/Period.
+model TimetableEntry {
+  id           String @id @default(cuid())
+  day          String   // "MON".."SAT"
+  periodNumber Int
+  locked       Boolean @default(false) // manually pinned — generator won't move it
+
+  schoolId String
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  versionId String
+  version   TimetableVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+
+  divisionId String
+  division   Division @relation(fields: [divisionId], references: [id], onDelete: Cascade)
+
+  subjectId String
+  subject   Subject @relation(fields: [subjectId], references: [id], onDelete: Cascade)
+
+  teacherId String
+  teacher   Teacher @relation(fields: [teacherId], references: [id], onDelete: Cascade)
+
+  // Hard DB-level guarantees: no division double-booked, no teacher double-booked,
+  // within the same generated version.
+  @@unique([versionId, divisionId, day, periodNumber])
+  @@unique([versionId, teacherId, day, periodNumber])
+  @@index([schoolId])
+}

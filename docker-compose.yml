@@ -1,0 +1,57 @@
+# Self-host the entire stack on a single VPS. Requires a .env file next
+# to this compose file (see .env.example below) with real secrets.
+#
+# Usage:
+#   docker compose up -d --build
+#   docker compose exec backend npm run seed   # optional demo data
+#
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: timetable
+      POSTGRES_USER: timetable
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U timetable"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://timetable:${POSTGRES_PASSWORD}@postgres:5432/timetable
+      JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+      JWT_EXPIRES_IN: 7d
+      PORT: 4000
+      CORS_ORIGIN: ${CORS_ORIGIN:?set CORS_ORIGIN in .env, e.g. https://timetable.yourdomain.com}
+      SUPER_ADMIN_EMAIL: ${SUPER_ADMIN_EMAIL:?set SUPER_ADMIN_EMAIL in .env}
+      SUPER_ADMIN_PASSWORD: ${SUPER_ADMIN_PASSWORD:?set SUPER_ADMIN_PASSWORD in .env}
+      STRIPE_SECRET_KEY: ${STRIPE_SECRET_KEY:?set STRIPE_SECRET_KEY in .env}
+      STRIPE_WEBHOOK_SECRET: ${STRIPE_WEBHOOK_SECRET:?set STRIPE_WEBHOOK_SECRET in .env}
+      STRIPE_PRICE_ID: ${STRIPE_PRICE_ID:?set STRIPE_PRICE_ID in .env}
+      APP_URL: ${FRONTEND_URL:?set FRONTEND_URL in .env, e.g. https://timetable.yourdomain.com}
+    ports:
+      - "4000:4000"
+
+  frontend:
+    build:
+      context: ./frontend
+      args:
+        VITE_API_URL: ${VITE_API_URL:-/api}
+    restart: unless-stopped
+    ports:
+      - "80:80"
+
+volumes:
+  pgdata:
