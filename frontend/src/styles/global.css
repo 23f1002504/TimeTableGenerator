@@ -141,24 +141,80 @@ button {
 
 .info-icon {
   flex-shrink: 0;
-  width: 16px;
-  height: 16px;
+  width: 17px;
+  height: 17px;
   border-radius: 50%;
-  border: 1px solid rgba(255, 255, 255, 0.28);
-  color: rgba(255, 255, 255, 0.6);
+  border: 1.5px solid rgba(255, 255, 255, 0.35);
+  color: rgba(255, 255, 255, 0.75);
   font-size: 10.5px;
   font-weight: 700;
-  font-style: normal;
-  font-family: var(--font-mono);
+  font-style: italic;
+  font-family: Georgia, "Times New Roman", serif;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: help;
+  transition: all 0.15s ease;
 }
-.info-icon:hover {
+.info-icon:hover,
+.info-icon:focus-visible {
   border-color: var(--teal);
   color: #fff;
   background: var(--teal);
+  transform: scale(1.1);
+}
+
+.info-tooltip {
+  position: fixed;
+  z-index: 9999;
+  width: 250px;
+  background: var(--ink);
+  color: #e8eaf3;
+  padding: 12px 14px;
+  border-radius: 10px;
+  font-size: 12.5px;
+  line-height: 1.55;
+  font-weight: 500;
+  font-family: var(--font-ui);
+  box-shadow: 0 12px 32px rgba(15, 19, 38, 0.4), 0 2px 8px rgba(15, 19, 38, 0.3);
+  pointer-events: none;
+  animation: tooltipFadeIn 0.14s ease;
+}
+
+.info-tooltip-right {
+  border-left: 3px solid var(--teal);
+}
+.info-tooltip-right::before {
+  content: "";
+  position: absolute;
+  left: -7px;
+  top: 50%;
+  transform: translateY(-50%);
+  border-width: 6px 7px 6px 0;
+  border-style: solid;
+  border-color: transparent var(--teal) transparent transparent;
+}
+
+.info-tooltip-below {
+  border-top: 3px solid var(--teal);
+}
+.info-tooltip-below::before {
+  content: "";
+  position: absolute;
+  top: -7px;
+  left: var(--arrow-left, 16px);
+  border-width: 0 6px 7px 6px;
+  border-style: solid;
+  border-color: transparent transparent var(--teal) transparent;
+}
+
+@keyframes tooltipFadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
 }
 
 .sidebar .nav-link:hover {
@@ -619,5 +675,144 @@ textarea:focus {
   }
   .login-hero {
     display: none;
+  }
+  .login-panel {
+    padding: 20px;
+  }
+}
+
+/* ==========================================================
+   Mobile layout — sidebar becomes an off-canvas drawer, a
+   fixed top bar takes its place for navigation access.
+   ========================================================== */
+.mobile-topbar {
+  display: none;
+}
+.sidebar-backdrop {
+  display: none;
+}
+.sidebar-close-btn {
+  display: none;
+}
+
+@media (max-width: 860px) {
+  .mobile-topbar {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    position: fixed;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 54px;
+    background: #fff;
+    border-bottom: 1px solid var(--border);
+    padding: 0 14px;
+    z-index: 30;
+  }
+  .mobile-topbar .brand-name {
+    font-weight: 700;
+    font-size: 15px;
+  }
+
+  .hamburger-btn {
+    width: 30px;
+    height: 30px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 4px;
+    background: none;
+    border: none;
+    cursor: pointer;
+    flex-shrink: 0;
+  }
+  .hamburger-btn span {
+    width: 18px;
+    height: 2px;
+    background: var(--ink);
+    border-radius: 2px;
+  }
+
+  .app-shell {
+    display: block;
+  }
+
+  .sidebar {
+    position: fixed;
+    top: 0;
+    left: 0;
+    bottom: 0;
+    width: 78vw;
+    max-width: 300px;
+    z-index: 40;
+    transform: translateX(-100%);
+    transition: transform 0.25s ease;
+    overflow-y: auto;
+  }
+  .sidebar.open {
+    transform: translateX(0);
+  }
+  .sidebar .brand {
+    justify-content: space-between;
+  }
+  .sidebar-close-btn {
+    display: block;
+    margin-left: auto;
+    background: none;
+    border: none;
+    color: #cfd4e6;
+    font-size: 16px;
+    cursor: pointer;
+    padding: 4px 8px;
+  }
+
+  .sidebar-backdrop {
+    display: block;
+    position: fixed;
+    inset: 0;
+    background: rgba(20, 24, 44, 0.5);
+    z-index: 35;
+  }
+
+  .main {
+    padding: 70px 16px 40px;
+    max-width: 100%;
+  }
+
+  .page-header {
+    align-items: flex-start;
+  }
+  .page-header h1 {
+    font-size: 19px;
+  }
+
+  .grid-2,
+  .grid-3 {
+    grid-template-columns: 1fr;
+  }
+
+  .card {
+    padding: 14px;
+    overflow-x: auto;
+  }
+  .card table.table {
+    min-width: 560px;
+  }
+
+  .modal {
+    width: 92vw;
+    max-width: 92vw;
+    padding: 18px;
+  }
+
+  .login-box {
+    padding: 22px;
+  }
+
+  .timetable-grid .lesson-cell,
+  .timetable-grid .break-cell {
+    min-width: 92px;
   }
 }
