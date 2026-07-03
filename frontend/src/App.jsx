@@ -59,8 +59,8 @@ export default function App() {
       />
 
       {[
-        ["teachers", Teachers],
         ["subjects", Subjects],
+        ["teachers", Teachers],
         ["classes", ClassesDivisions],
         ["periods", Periods],
         ["requirements", Requirements],
