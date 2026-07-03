@@ -23,7 +23,7 @@ const NAV_ITEMS = [
     segment: "classes",
     label: "Classes & Divisions",
     icon: "🏫",
-    hint: "Add grades/classes (e.g. Grade 6) and their sections (A, B...). Needed before Curriculum.",
+    hint: "Add grades/classes and their sections (A, B...) — or create a whole range at once (e.g. Grade 1–10). Needed before Curriculum.",
   },
   {
     segment: "periods",
@@ -35,7 +35,7 @@ const NAV_ITEMS = [
     segment: "requirements",
     label: "Curriculum",
     icon: "📋",
-    hint: "For each division, assign a subject + teacher + hours/week. Requires Subjects, Teachers, and Classes & Divisions to be set up first.",
+    hint: "For each division, assign a subject + teacher + hours/week — then copy it to other divisions in one click instead of repeating it. Requires Subjects, Teachers, and Classes & Divisions first.",
   },
   {
     segment: "timetable",

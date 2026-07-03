@@ -6,6 +6,7 @@ router.use(requireAuth, requireRole("SCHOOL_ADMIN", "SUPER_ADMIN"));
 
 router.get("/schools/:schoolId", ctrl.listForSchool);
 router.post("/", ctrl.upsert);
+router.post("/copy", ctrl.copyToDivisions);
 router.delete("/:id", ctrl.remove);
 
 module.exports = router;
