@@ -9,7 +9,7 @@ export default function Subjects() {
   const [subjects, setSubjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
-  const [form, setForm] = useState({ name: "", code: "", color: COLORS[0], isDoublePeriod: false });
+  const [form, setForm] = useState({ name: "", code: "", color: COLORS[0], isDoublePeriod: false, preferMorning: false });
   const [editingId, setEditingId] = useState(null);
 
   async function load() {
@@ -30,7 +30,7 @@ export default function Subjects() {
   }, [params?.schoolId]);
 
   function resetForm() {
-    setForm({ name: "", code: "", color: COLORS[0], isDoublePeriod: false });
+    setForm({ name: "", code: "", color: COLORS[0], isDoublePeriod: false, preferMorning: false });
     setEditingId(null);
   }
 
@@ -52,7 +52,13 @@ export default function Subjects() {
 
   function edit(subject) {
     setEditingId(subject.id);
-    setForm({ name: subject.name, code: subject.code || "", color: subject.color, isDoublePeriod: subject.isDoublePeriod });
+    setForm({
+      name: subject.name,
+      code: subject.code || "",
+      color: subject.color,
+      isDoublePeriod: subject.isDoublePeriod,
+      preferMorning: subject.preferMorning,
+    });
   }
 
   async function remove(id) {
@@ -113,6 +119,10 @@ export default function Subjects() {
             <input type="checkbox" checked={form.isDoublePeriod} onChange={(e) => setForm({ ...form, isDoublePeriod: e.target.checked })} />
             Needs double (back-to-back) periods, e.g. lab sessions
           </label>
+          <label className="checkbox-row">
+            <input type="checkbox" checked={form.preferMorning} onChange={(e) => setForm({ ...form, preferMorning: e.target.checked })} />
+            Difficult subject — prefer scheduling it earlier in the day
+          </label>
           <div className="flex gap-8" style={{ marginTop: 10 }}>
             <button className="btn btn-primary">{editingId ? "Save changes" : "Add subject"}</button>
             {editingId && (
@@ -149,7 +159,14 @@ export default function Subjects() {
                     </span>
                   </td>
                   <td className="mono">{s.code}</td>
-                  <td>{s.isDoublePeriod ? "Double period" : "Single period"}</td>
+                  <td>
+                    {s.isDoublePeriod ? "Double period" : "Single period"}
+                    {s.preferMorning && (
+                      <span className="chip" style={{ marginLeft: 6, background: "#fff6e5", color: "var(--amber-dark)" }}>
+                        ☀️ Morning
+                      </span>
+                    )}
+                  </td>
                   <td>
                     <div className="flex gap-8">
                       <button className="btn btn-outline btn-sm" onClick={() => edit(s)}>

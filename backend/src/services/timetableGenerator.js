@@ -7,18 +7,33 @@
  *               Math 6x/week, that's 6 separate lesson units to place.
  *   Domain    : every (day, periodNumber) slot from the school's bell
  *               schedule (excluding breaks).
- *   Constraints (all hard, all enforced):
+ *
+ *   HARD constraints (always enforced, never violated):
  *     1. A division can only have one subject in a given slot.
  *     2. A teacher can only be in one place in a given slot.
  *     3. A teacher never exceeds maxPeriodsPerDay / maxPeriodsPerWeek.
  *     4. A teacher is never placed in a slot they marked unavailable.
- *     5. Manually "locked" entries from a previous version are kept as-is
+ *     5. A teacher must be qualified for the subject (enforced upstream —
+ *        Requirement.teacherId is only ever set to a qualified teacher).
+ *     6. Manually "locked" entries from a previous version are kept as-is
  *        and treated as pre-filled constraints.
- *     6. Double-period subjects (e.g. labs) are placed as two
+ *     7. Double-period subjects (e.g. labs) are placed as two
  *        back-to-back periods on the same day.
- *   Soft preference (best-effort, relaxed if it blocks a solution):
- *     - Spread a subject's lessons across different days for a division
- *       rather than stacking them on the same day.
+ *     8. [Configurable] A division never has more than
+ *        settings.maxSameSubjectPerDay periods of the same subject on
+ *        one day (0 = unlimited).
+ *     9. [Configurable] A teacher never teaches more than
+ *        settings.teacherMaxConsecutivePeriods periods in a row on one
+ *        day without a gap (0 = unlimited).
+ *
+ *   SOFT preferences (optimized for, relaxed if they'd block a solution):
+ *     - [Configurable] spreadSubjectsAcrossWeek: avoid stacking a
+ *       subject's remaining lessons on days it's already scheduled.
+ *     - [Configurable] preferMorningForPriority: subjects flagged
+ *       "preferMorning" (e.g. Math) are nudged toward earlier periods.
+ *     - [Configurable] avoidTeacherGaps: prefer slots adjacent to a
+ *       teacher's other lessons that day over leaving them a free gap
+ *       between two teaching periods.
  *
  * Approach: most-constrained-first backtracking with randomized
  * tie-breaking + restart, which in practice converges quickly for
@@ -33,6 +48,14 @@ const prisma = require("../lib/prisma");
 
 const MAX_BACKTRACK_STEPS = 60000; // per attempt, guards against runaway recursion
 const MAX_ATTEMPTS = 25; // randomized restarts
+
+const DEFAULT_SETTINGS = {
+  maxSameSubjectPerDay: 2,
+  teacherMaxConsecutivePeriods: 0,
+  spreadSubjectsAcrossWeek: true,
+  preferMorningForPriority: true,
+  avoidTeacherGaps: true,
+};
 
 function shuffle(arr, rng) {
   const a = arr.slice();
@@ -57,11 +80,25 @@ function makeRng(seed) {
 
 const slotKey = (day, periodNumber) => `${day}#${periodNumber}`;
 
+// Given the set of period numbers a teacher already has on a day, plus
+// the ones a candidate placement would add, returns the longest run of
+// back-to-back periods that would result.
+function longestConsecutiveRun(existingNums, newNums) {
+  const all = Array.from(new Set([...existingNums, ...newNums])).sort((a, b) => a - b);
+  let best = all.length ? 1 : 0;
+  let run = 1;
+  for (let i = 1; i < all.length; i++) {
+    run = all[i] === all[i - 1] + 1 ? run + 1 : 1;
+    best = Math.max(best, run);
+  }
+  return best;
+}
+
 /**
  * Loads everything needed to generate a timetable for a school.
  */
 async function loadSchoolData(schoolId) {
-  const [periods, requirements, teachers, divisions] = await Promise.all([
+  const [periods, requirements, teachers, divisions, settings] = await Promise.all([
     prisma.period.findMany({
       where: { schoolId, isBreak: false },
       orderBy: [{ day: "asc" }, { periodNumber: "asc" }],
@@ -78,9 +115,21 @@ async function loadSchoolData(schoolId) {
       where: { class: { schoolId } },
       include: { class: true },
     }),
+    getOrCreateSettings(schoolId),
   ]);
 
-  return { periods, requirements, teachers, divisions };
+  return { periods, requirements, teachers, divisions, settings };
+}
+
+/**
+ * Fetches this school's editable constraint settings, creating a row
+ * with defaults on first use so the rest of the app can always assume
+ * one exists.
+ */
+async function getOrCreateSettings(schoolId) {
+  const existing = await prisma.schoolSettings.findUnique({ where: { schoolId } });
+  if (existing) return existing;
+  return prisma.schoolSettings.create({ data: { schoolId, ...DEFAULT_SETTINGS } });
 }
 
 /**
@@ -104,6 +153,7 @@ function buildLessons(requirements) {
         divisionLabel: `${req.division.class.name} ${req.division.name}`,
         subjectId: req.subjectId,
         subjectName: req.subject.name,
+        preferMorning: !!req.subject.preferMorning,
         teacherId: req.teacherId,
         teacherName: req.teacher.name,
         double: isDouble,
@@ -143,7 +193,7 @@ function indexPeriods(periods) {
 /**
  * Runs one backtracking attempt. Returns { success, placements, unplaced }.
  */
-function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
+function attempt(lessons, periodIndex, teacherMeta, settings, seed, preLocked) {
   const rng = makeRng(seed);
   const orderedLessons = shuffle(lessons, rng);
 
@@ -160,7 +210,18 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
   const teacherBusy = new Set(); // `${teacherId}#${slotKey}`
   const teacherDayCount = {}; // `${teacherId}#${day}` -> count
   const teacherWeekCount = {}; // teacherId -> count
-  const divisionSubjectDay = new Set(); // `${divisionId}#${subjectId}#${day}` soft-avoid
+  const teacherDayPeriods = {}; // `${teacherId}#${day}` -> Set<periodNumber> (for consecutive-run + gap checks)
+  const divisionSubjectDayCount = {}; // `${divisionId}#${subjectId}#${day}` -> count (hard cap + soft ranking)
+
+  function addTeacherPeriod(teacherId, day, periodNumber) {
+    const key = `${teacherId}#${day}`;
+    if (!teacherDayPeriods[key]) teacherDayPeriods[key] = new Set();
+    teacherDayPeriods[key].add(periodNumber);
+  }
+  function removeTeacherPeriod(teacherId, day, periodNumber) {
+    const key = `${teacherId}#${day}`;
+    if (teacherDayPeriods[key]) teacherDayPeriods[key].delete(periodNumber);
+  }
 
   // Seed with pre-locked entries (kept as-is from a previous version)
   for (const l of preLocked) {
@@ -168,12 +229,27 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
     teacherBusy.add(`${l.teacherId}#${slotKey(l.day, l.periodNumber)}`);
     teacherDayCount[`${l.teacherId}#${l.day}`] = (teacherDayCount[`${l.teacherId}#${l.day}`] || 0) + 1;
     teacherWeekCount[l.teacherId] = (teacherWeekCount[l.teacherId] || 0) + 1;
-    divisionSubjectDay.add(`${l.divisionId}#${l.subjectId}#${l.day}`);
+    addTeacherPeriod(l.teacherId, l.day, l.periodNumber);
+    const dsKey = `${l.divisionId}#${l.subjectId}#${l.day}`;
+    divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 1;
   }
 
   const placements = [];
   const unplaced = [];
   let steps = 0;
+
+  function subjectDayCapOk(lesson, day, additionalUnits) {
+    if (!settings.maxSameSubjectPerDay || settings.maxSameSubjectPerDay <= 0) return true;
+    const key = `${lesson.divisionId}#${lesson.subjectId}#${day}`;
+    const current = divisionSubjectDayCount[key] || 0;
+    return current + additionalUnits <= settings.maxSameSubjectPerDay;
+  }
+
+  function consecutiveCapOk(teacherId, day, newPeriodNumbers) {
+    if (!settings.teacherMaxConsecutivePeriods || settings.teacherMaxConsecutivePeriods <= 0) return true;
+    const existing = Array.from(teacherDayPeriods[`${teacherId}#${day}`] || []);
+    return longestConsecutiveRun(existing, newPeriodNumbers) <= settings.teacherMaxConsecutivePeriods;
+  }
 
   function candidateSlotsFor(lesson) {
     const unavailable = teacherMeta[lesson.teacherId].unavailableSet;
@@ -192,6 +268,8 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
           if (dayCount + 2 > teacherMeta[lesson.teacherId].maxPerDay) return false;
           const weekCount = teacherWeekCount[lesson.teacherId] || 0;
           if (weekCount + 2 > teacherMeta[lesson.teacherId].maxPerWeek) return false;
+          if (!subjectDayCapOk(lesson, pair.day, 2)) return false;
+          if (!consecutiveCapOk(lesson.teacherId, pair.day, [pair.first, pair.second])) return false;
           return true;
         }),
         rng
@@ -208,23 +286,44 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
         if (dayCount + 1 > teacherMeta[lesson.teacherId].maxPerDay) return false;
         const weekCount = teacherWeekCount[lesson.teacherId] || 0;
         if (weekCount + 1 > teacherMeta[lesson.teacherId].maxPerWeek) return false;
+        if (!subjectDayCapOk(lesson, slot.day, 1)) return false;
+        if (!consecutiveCapOk(lesson.teacherId, slot.day, [slot.periodNumber])) return false;
         return true;
       }),
       rng
     ).map((slot) => ({ kind: "single", day: slot.day, periodNumber: slot.periodNumber }));
   }
 
-  // Rank candidates so slots that avoid stacking the same subject on the
-  // same day for a division are preferred (soft constraint).
+  // Combines every enabled soft preference into one score per candidate
+  // slot (lower is better), then sorts by it. Randomized shuffle already
+  // happened in candidateSlotsFor, so ties stay randomized.
   function rankCandidates(lesson, candidates) {
     return candidates
       .map((c) => {
+        let score = 0;
         const day = c.day;
-        const key = `${lesson.divisionId}#${lesson.subjectId}#${day}`;
-        const penalty = divisionSubjectDay.has(key) ? 1 : 0;
-        return { c, penalty };
+        const periodNumber = c.kind === "double" ? c.first : c.periodNumber;
+
+        if (settings.spreadSubjectsAcrossWeek) {
+          const key = `${lesson.divisionId}#${lesson.subjectId}#${day}`;
+          if (divisionSubjectDayCount[key] > 0) score += 5;
+        }
+
+        if (settings.preferMorningForPriority && lesson.preferMorning) {
+          score += periodNumber; // earlier period numbers score lower (better)
+        }
+
+        if (settings.avoidTeacherGaps) {
+          const existing = teacherDayPeriods[`${lesson.teacherId}#${day}`];
+          if (existing && existing.size > 0) {
+            const adjacent = existing.has(periodNumber - 1) || existing.has(periodNumber + 1);
+            score += adjacent ? -3 : 1; // reward clustering, mildly penalize creating a new island
+          }
+        }
+
+        return { c, score };
       })
-      .sort((a, b) => a.penalty - b.penalty)
+      .sort((a, b) => a.score - b.score)
       .map((x) => x.c);
   }
 
@@ -238,7 +337,10 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
       teacherBusy.add(`${lesson.teacherId}#${s2}`);
       teacherDayCount[`${lesson.teacherId}#${choice.day}`] = (teacherDayCount[`${lesson.teacherId}#${choice.day}`] || 0) + 2;
       teacherWeekCount[lesson.teacherId] = (teacherWeekCount[lesson.teacherId] || 0) + 2;
-      divisionSubjectDay.add(`${lesson.divisionId}#${lesson.subjectId}#${choice.day}`);
+      addTeacherPeriod(lesson.teacherId, choice.day, choice.first);
+      addTeacherPeriod(lesson.teacherId, choice.day, choice.second);
+      const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+      divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 2;
       placements.push({ ...lesson, day: choice.day, periodNumber: choice.first });
       placements.push({ ...lesson, day: choice.day, periodNumber: choice.second });
     } else {
@@ -247,7 +349,9 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
       teacherBusy.add(`${lesson.teacherId}#${s}`);
       teacherDayCount[`${lesson.teacherId}#${choice.day}`] = (teacherDayCount[`${lesson.teacherId}#${choice.day}`] || 0) + 1;
       teacherWeekCount[lesson.teacherId] = (teacherWeekCount[lesson.teacherId] || 0) + 1;
-      divisionSubjectDay.add(`${lesson.divisionId}#${lesson.subjectId}#${choice.day}`);
+      addTeacherPeriod(lesson.teacherId, choice.day, choice.periodNumber);
+      const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+      divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 1;
       placements.push({ ...lesson, day: choice.day, periodNumber: choice.periodNumber });
     }
   }
@@ -262,6 +366,10 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
       teacherBusy.delete(`${lesson.teacherId}#${s2}`);
       teacherDayCount[`${lesson.teacherId}#${choice.day}`] -= 2;
       teacherWeekCount[lesson.teacherId] -= 2;
+      removeTeacherPeriod(lesson.teacherId, choice.day, choice.first);
+      removeTeacherPeriod(lesson.teacherId, choice.day, choice.second);
+      const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+      divisionSubjectDayCount[dsKey] -= 2;
       placements.pop();
       placements.pop();
     } else {
@@ -270,6 +378,9 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
       teacherBusy.delete(`${lesson.teacherId}#${s}`);
       teacherDayCount[`${lesson.teacherId}#${choice.day}`] -= 1;
       teacherWeekCount[lesson.teacherId] -= 1;
+      removeTeacherPeriod(lesson.teacherId, choice.day, choice.periodNumber);
+      const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+      divisionSubjectDayCount[dsKey] -= 1;
       placements.pop();
     }
   }
@@ -296,7 +407,7 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
   if (!solved) {
     // Fall back to a greedy best-effort pass so the user still gets a
     // usable timetable, with the remaining conflicts flagged explicitly.
-    return greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng);
+    return greedyFallback(orderedLessons, periodIndex, teacherMeta, settings, preLocked, rng);
   }
 
   return { success: true, placements, unplaced: [] };
@@ -305,18 +416,45 @@ function attempt(lessons, periodIndex, teacherMeta, seed, preLocked) {
 /**
  * Greedy fallback: place what can be placed, report the rest as unplaced
  * so a human can resolve them (e.g. by adjusting hours or availability).
+ * Hard constraints (including the configurable ones) are still enforced
+ * here — only the soft preferences are dropped, to maximize the chance
+ * of placing every lesson somewhere.
  */
-function greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng) {
+function greedyFallback(orderedLessons, periodIndex, teacherMeta, settings, preLocked, rng) {
   const divisionBusy = new Set();
   const teacherBusy = new Set();
   const teacherDayCount = {};
   const teacherWeekCount = {};
+  const teacherDayPeriods = {};
+  const divisionSubjectDayCount = {};
+
+  function addTeacherPeriod(teacherId, day, periodNumber) {
+    const key = `${teacherId}#${day}`;
+    if (!teacherDayPeriods[key]) teacherDayPeriods[key] = new Set();
+    teacherDayPeriods[key].add(periodNumber);
+  }
 
   for (const l of preLocked) {
     divisionBusy.add(`${l.divisionId}#${slotKey(l.day, l.periodNumber)}`);
     teacherBusy.add(`${l.teacherId}#${slotKey(l.day, l.periodNumber)}`);
     teacherDayCount[`${l.teacherId}#${l.day}`] = (teacherDayCount[`${l.teacherId}#${l.day}`] || 0) + 1;
     teacherWeekCount[l.teacherId] = (teacherWeekCount[l.teacherId] || 0) + 1;
+    addTeacherPeriod(l.teacherId, l.day, l.periodNumber);
+    const dsKey = `${l.divisionId}#${l.subjectId}#${l.day}`;
+    divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 1;
+  }
+
+  function subjectDayCapOk(lesson, day, additionalUnits) {
+    if (!settings.maxSameSubjectPerDay || settings.maxSameSubjectPerDay <= 0) return true;
+    const key = `${lesson.divisionId}#${lesson.subjectId}#${day}`;
+    const current = divisionSubjectDayCount[key] || 0;
+    return current + additionalUnits <= settings.maxSameSubjectPerDay;
+  }
+
+  function consecutiveCapOk(teacherId, day, newPeriodNumbers) {
+    if (!settings.teacherMaxConsecutivePeriods || settings.teacherMaxConsecutivePeriods <= 0) return true;
+    const existing = Array.from(teacherDayPeriods[`${teacherId}#${day}`] || []);
+    return longestConsecutiveRun(existing, newPeriodNumbers) <= settings.teacherMaxConsecutivePeriods;
   }
 
   const placements = [];
@@ -341,6 +479,8 @@ function greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng
         if (dayCount + 2 > teacherMeta[lesson.teacherId].maxPerDay) continue;
         const weekCount = teacherWeekCount[lesson.teacherId] || 0;
         if (weekCount + 2 > teacherMeta[lesson.teacherId].maxPerWeek) continue;
+        if (!subjectDayCapOk(lesson, choice.day, 2)) continue;
+        if (!consecutiveCapOk(lesson.teacherId, choice.day, [choice.first, choice.second])) continue;
 
         divisionBusy.add(`${lesson.divisionId}#${s1}`);
         divisionBusy.add(`${lesson.divisionId}#${s2}`);
@@ -348,6 +488,10 @@ function greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng
         teacherBusy.add(`${lesson.teacherId}#${s2}`);
         teacherDayCount[`${lesson.teacherId}#${choice.day}`] = dayCount + 2;
         teacherWeekCount[lesson.teacherId] = weekCount + 2;
+        addTeacherPeriod(lesson.teacherId, choice.day, choice.first);
+        addTeacherPeriod(lesson.teacherId, choice.day, choice.second);
+        const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+        divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 2;
         placements.push({ ...lesson, day: choice.day, periodNumber: choice.first });
         placements.push({ ...lesson, day: choice.day, periodNumber: choice.second });
         placed = true;
@@ -361,11 +505,16 @@ function greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng
         if (dayCount + 1 > teacherMeta[lesson.teacherId].maxPerDay) continue;
         const weekCount = teacherWeekCount[lesson.teacherId] || 0;
         if (weekCount + 1 > teacherMeta[lesson.teacherId].maxPerWeek) continue;
+        if (!subjectDayCapOk(lesson, choice.day, 1)) continue;
+        if (!consecutiveCapOk(lesson.teacherId, choice.day, [choice.periodNumber])) continue;
 
         divisionBusy.add(`${lesson.divisionId}#${s}`);
         teacherBusy.add(`${lesson.teacherId}#${s}`);
         teacherDayCount[`${lesson.teacherId}#${choice.day}`] = dayCount + 1;
         teacherWeekCount[lesson.teacherId] = weekCount + 1;
+        addTeacherPeriod(lesson.teacherId, choice.day, choice.periodNumber);
+        const dsKey = `${lesson.divisionId}#${lesson.subjectId}#${choice.day}`;
+        divisionSubjectDayCount[dsKey] = (divisionSubjectDayCount[dsKey] || 0) + 1;
         placements.push({ ...lesson, day: choice.day, periodNumber: choice.periodNumber });
         placed = true;
         break;
@@ -396,7 +545,7 @@ function greedyFallback(orderedLessons, periodIndex, teacherMeta, preLocked, rng
  *        from the most recent version as fixed constraints
  */
 async function generateTimetable(schoolId, options = {}) {
-  const { periods, requirements, teachers, divisions } = await loadSchoolData(schoolId);
+  const { periods, requirements, teachers, divisions, settings } = await loadSchoolData(schoolId);
 
   if (periods.length === 0) {
     const err = new Error("Define the school's period/bell schedule before generating a timetable.");
@@ -437,7 +586,7 @@ async function generateTimetable(schoolId, options = {}) {
 
   let best = null;
   for (let i = 0; i < MAX_ATTEMPTS; i++) {
-    const result = attempt(lessons, periodIndex, teacherMeta, i + 1, preLocked);
+    const result = attempt(lessons, periodIndex, teacherMeta, settings, i + 1, preLocked);
     if (result.success) {
       best = result;
       break;
@@ -493,4 +642,4 @@ async function generateTimetable(schoolId, options = {}) {
   };
 }
 
-module.exports = { generateTimetable, loadSchoolData, buildLessons, indexPeriods };
+module.exports = { generateTimetable, loadSchoolData, buildLessons, indexPeriods, getOrCreateSettings, DEFAULT_SETTINGS };

@@ -38,6 +38,12 @@ const NAV_ITEMS = [
     hint: "For each division, assign a subject + teacher + hours/week — then copy it to other divisions in one click instead of repeating it. Requires Subjects, Teachers, and Classes & Divisions first.",
   },
   {
+    segment: "constraints",
+    label: "Constraints",
+    icon: "⚙️",
+    hint: "Tune the scheduling rules — max repeats of a subject per day, teacher consecutive-period limits, and other preferences the generator honors.",
+  },
+  {
     segment: "timetable",
     label: "Timetable",
     icon: "🗓️",

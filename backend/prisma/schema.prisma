@@ -11,7 +11,7 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql" // change to "postgresql" for production
+  provider = "sqlite" // change to "postgresql" for production
   url      = env("DATABASE_URL")
 }
 
@@ -48,6 +48,7 @@ model School {
   periods           Period[]
   timetableEntries  TimetableEntry[]
   timetableVersions TimetableVersion[]
+  settings          SchoolSettings?
 }
 
 // A school's signup request, submitted via the public "Request Access"
@@ -122,6 +123,7 @@ model Subject {
   code       String?
   color      String  @default("#4F46E5") // for UI display
   isDoublePeriod Boolean @default(false) // e.g. labs that need 2 consecutive periods
+  preferMorning  Boolean @default(false) // "difficult subject" — nudged toward earlier periods
 
   schoolId String
   school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
@@ -131,6 +133,26 @@ model Subject {
   timetableEntries TimetableEntry[]
 
   @@index([schoolId])
+}
+
+// The editable "prime" scheduling constraints for a school — one row
+// per school, created on first access with sensible defaults. These are
+// read directly by the generator (see timetableGenerator.js) so changing
+// them here actually changes how the next generation behaves.
+model SchoolSettings {
+  id       String @id @default(cuid())
+  schoolId String @unique
+  school   School @relation(fields: [schoolId], references: [id], onDelete: Cascade)
+
+  // HARD — the generator will never violate these.
+  maxSameSubjectPerDay         Int @default(2) // 0 = unlimited
+  teacherMaxConsecutivePeriods Int @default(0) // 0 = unlimited
+
+  // SOFT — preferences the generator optimizes for, relaxed if they'd
+  // otherwise block a valid solution.
+  spreadSubjectsAcrossWeek  Boolean @default(true)
+  preferMorningForPriority Boolean @default(true)
+  avoidTeacherGaps          Boolean @default(true)
 }
 
 model Teacher {

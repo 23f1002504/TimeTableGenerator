@@ -14,6 +14,7 @@ import ClassesDivisions from "./pages/ClassesDivisions.jsx";
 import Periods from "./pages/Periods.jsx";
 import Requirements from "./pages/Requirements.jsx";
 import Timetable from "./pages/Timetable.jsx";
+import Constraints from "./pages/Constraints.jsx";
 
 function ProtectedRoute({ children, roles }) {
   const { user, loading } = useAuth();
@@ -64,6 +65,7 @@ export default function App() {
         ["classes", ClassesDivisions],
         ["periods", Periods],
         ["requirements", Requirements],
+        ["constraints", Constraints],
         ["timetable", Timetable],
       ].map(([segment, Component]) => (
         <Route

@@ -11,6 +11,7 @@ const periodRoutes = require("./routes/periodRoutes");
 const requirementRoutes = require("./routes/requirementRoutes");
 const timetableRoutes = require("./routes/timetableRoutes");
 const applicationRoutes = require("./routes/applicationRoutes");
+const settingsRoutes = require("./routes/settingsRoutes");
 const { handleWebhook } = require("./controllers/stripeWebhookController");
 const errorHandler = require("./middleware/errorHandler");
 
@@ -37,6 +38,7 @@ app.use("/api/subjects", subjectRoutes);
 app.use("/api/classes", classRoutes); // classes + divisions
 app.use("/api/periods", periodRoutes); // bell schedule
 app.use("/api/requirements", requirementRoutes); // division-subject-teacher-hours
+app.use("/api/settings", settingsRoutes); // editable "prime" scheduling constraints
 app.use("/api/timetable", timetableRoutes); // generate + view + edit
 
 app.use((req, res) => res.status(404).json({ error: "Route not found" }));
