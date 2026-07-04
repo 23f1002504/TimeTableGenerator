@@ -22,6 +22,9 @@ async function requireAuth(req, res, next) {
     req.user = user;
     next();
   } catch (err) {
+    // The generic message is what the client sees (so we don't leak
+    // internals), but log the real cause — this endpoint silently
+    // swallowing DB errors as "invalid token" has bitten us before.
     console.error("requireAuth failed:", err.message);
     return res.status(401).json({ error: "Invalid or expired token" });
   }
